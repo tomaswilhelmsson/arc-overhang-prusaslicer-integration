@@ -1068,7 +1068,7 @@ def readSettingsFromGCode2dict(gcodeLines:list)->dict:
     # Dont know if its a thing but in case extrusion width is % of nozzle diameter convert it..
     if "%" in str(gCodeSettingDict.get("extrusion_width")):
         gCodeSettingDict["extrusion_width"] = gCodeSettingDict.get("nozzle_diameter")*(float(gCodeSettingDict.get("extrusion_width").strip("%"))/100)
-    warnings.warn("Blah: " + str(gCodeSettingDict.get("extrusion_width")))
+
     return gCodeSettingDict
 
 def getExtrusionWidth(gCodeSettingDict:dict, param:str)->float:
