@@ -55,8 +55,8 @@ def makeFullSettingDict(gCodeSettingDict:dict) -> dict:
         "ArcPrintSpeed":1.5*60, #Unit:mm/min
         #"ArcPrintTemp":gCodeSettingDict.get("temperature"), # unit: Celsius
         "ArcTravelFeedRate":30*60, # slower travel speed, Unit:mm/min
-        "ExtendIntoPerimeter":1.5*gCodeSettingDict.get("perimeter_extrusion_width"), #min=0.5extrusionwidth!, extends the Area for arc generation, put higher to go through small passages. Unit:mm
-        "MaxDistanceFromPerimeter":2*gCodeSettingDict.get("perimeter_extrusion_width"),#Control how much bumpiness you allow between arcs and perimeter. lower will follow perimeter better, but create a lot of very small arcs. Should be more that 1 Arcwidth! Unit:mm
+        "ExtendIntoPerimeter":1.5*getExtrusionWidth(gCodeSettingDict, "perimeter_extrusion_width"), #min=0.5extrusionwidth!, extends the Area for arc generation, put higher to go through small passages. Unit:mm
+        "MaxDistanceFromPerimeter":2*getExtrusionWidth(gCodeSettingDict, "perimeter_extrusion_width"),#Control how much bumpiness you allow between arcs and perimeter. lower will follow perimeter better, but create a lot of very small arcs. Should be more that 1 Arcwidth! Unit:mm
         "MinArea":5*10,#Unit:mm2
         "MinBridgeLength":5,#Unit:mm
         "RMax":110, # the max radius of the arcs.
@@ -728,7 +728,7 @@ class Layer():
     def createHilbertCurveInPoly(self,poly:Polygon):
         print("making hilbert surface")
         dimensions=2
-        w=self.parameters.get("solid_infill_extrusion_width")
+        w=getExtrusionWidth(self.parameters, "solid_infill_extrusion_width")
         a=self.parameters.get("HilbertFillingPercentage")/100
         mmBetweenTravels=(self.parameters.get("aboveArcsInfillPrintSpeed")/60)*self.parameters.get("HilbertTravelEveryNSeconds")
         minX, minY, maxX, maxY=poly.bounds
@@ -1050,7 +1050,7 @@ def readSettingsFromGCode2dict(gcodeLines:list)->dict:
     gCodeSettingDict={}
     isSetting=False
     for line in gcodeLines:
-        if "; prusaslicer_config = begin" in line:
+        if "; SuperSlicer_config = begin" in line or "; PrusaSlicer_config = begin" in line:
             isSetting=True
             continue
         if isSetting :
@@ -1065,20 +1065,35 @@ def readSettingsFromGCode2dict(gcodeLines:list)->dict:
                 print("INFO:PrusaSlicer Setting not in the expected format, but added into script dictionary:",setting)
             else:    
                 print("Could not read setting from PrusaSlicer:",setting)
-    if "%" in str(gCodeSettingDict.get("perimeter_extrusion_width")) : #overwrite Percentage width as suggested by 5axes via github                
-        gCodeSettingDict["perimeter_extrusion_width"]=gCodeSettingDict.get("nozzle_diameter")*(float(gCodeSettingDict.get("perimeter_extrusion_width").strip("%"))/100)                 
+    # Dont know if its a thing but in case extrusion width is % of nozzle diameter convert it..
+    if "%" in str(gCodeSettingDict.get("extrusion_width")):
+        gCodeSettingDict["extrusion_width"] = gCodeSettingDict.get("nozzle_diameter")*(float(gCodeSettingDict.get("extrusion_width").strip("%"))/100)
+    warnings.warn("Blah: " + str(gCodeSettingDict.get("extrusion_width")))
     return gCodeSettingDict
 
+def getExtrusionWidth(gCodeSettingDict:dict, param:str)->float:
+    if not param in gCodeSettingDict:
+        return -1
+
+    if not gCodeSettingDict.get("extrusion_width"):
+        warning.warn("Setting extrusion_width not found in settings")
+        return -1
+    
+    if "%" in gCodeSettingDict.get(param):
+        return gCodeSettingDict.get("extrusion_width") * (float(gCodeSettingDict.get(param).strip("%"))/100)
+    
+    return gCodeSettingDict.get(param)
+    
 def checkforNecesarrySettings(gCodeSettingDict:dict)->bool:
     if not gCodeSettingDict.get("use_relative_e_distances"):
         warnings.warn("Script only works with relative e-distances enabled in PrusaSlicer. Change acordingly.")
         return False
-    if gCodeSettingDict.get("extrusion_width")<0.001 or gCodeSettingDict.get("perimeter_extrusion_width")<0.001 or gCodeSettingDict.get("solid_infill_extrusion_width")<0.001:
+    if gCodeSettingDict.get("extrusion_width")<0.001 or getExtrusionWidth(gCodeSettingDict, "perimeter_extrusion_width")<0.001 or getExtrusionWidth(gCodeSettingDict, "solid_infill_extrusion_width")<0.001:
         warnings.warn("Script only works with extrusion_width and perimeter_extrusion_width and solid_infill_extrusion_width>0. Change in PrusaSlicer acordingly.")
         return False    
-    if not gCodeSettingDict.get("overhangs"):
-        warnings.warn(" 'Detect Bridging Perimeters' disabled in PrusaSlicer. Activate in PrusaSlicer for script success!")
-        return False
+#    if not gCodeSettingDict.get("overhangs"):
+#        warnings.warn(" 'Detect Bridging Perimeters' disabled in PrusaSlicer. Activate in PrusaSlicer for script success!")
+#        return False
     if gCodeSettingDict.get("bridge_speed")>5:
         warnings.warn(f"Your Bridging Speed is set to {gCodeSettingDict.get('bridge_speed'):.0f} mm/s in PrusaSlicer. This can cause problems with warping.<=5mm/s is recommended")        
     if gCodeSettingDict.get("infill_first"):
@@ -1090,7 +1105,7 @@ def checkforNecesarrySettings(gCodeSettingDict:dict)->bool:
     return True
 def calcEStepsPerMM(settingsdict:dict,layerheight:float=None)->float:
     if layerheight:# case: printing on surface.
-        w=settingsdict.get("infill_extrusion_width")
+        w=getExtrusionWidth(settingsdict, "infill_extrusion_width")
         h=layerheight
         eVol=(w-h)*h+np.pi*(h/2)**2 *settingsdict.get("HilbertInfillExtrusionMultiplier",1)
     else:   #case: bridging, used for arcs. 
