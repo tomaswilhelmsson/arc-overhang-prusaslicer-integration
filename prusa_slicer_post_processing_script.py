@@ -51,34 +51,34 @@ def makeFullSettingDict(gCodeSettingDict:dict) -> dict:
         "CheckForAllowedSpace":False,# use the following x&y filter or not
         "AllowedSpaceForArcs": Polygon([[0,0],[500,0],[500,500],[0,500]]),#have control in which areas Arcs shall be generated
         "ArcCenterOffset":2, # Unit:mm, prevents very small Arcs by hiding the center in not printed section. Make 0 to get into tricky spots with smaller arcs.
-        "ArcMinPrintSpeed":0.5*60,#Unit:mm/min
-        "ArcPrintSpeed":1.5*60, #Unit:mm/min
+        "ArcMinPrintSpeed":3*60,#0.5*60,#Unit:mm/min
+        "ArcPrintSpeed":6*60,#1.5*60, #Unit:mm/min
         #"ArcPrintTemp":gCodeSettingDict.get("temperature"), # unit: Celsius
         "ArcTravelFeedRate":30*60, # slower travel speed, Unit:mm/min
-        "ExtendIntoPerimeter":1.5*getExtrusionWidth(gCodeSettingDict, "perimeter_extrusion_width"), #min=0.5extrusionwidth!, extends the Area for arc generation, put higher to go through small passages. Unit:mm
+        "ExtendIntoPerimeter":0.5*getExtrusionWidth(gCodeSettingDict, "perimeter_extrusion_width"), #min=0.5extrusionwidth!, extends the Area for arc generation, put higher to go through small passages. Unit:mm
         "MaxDistanceFromPerimeter":2*getExtrusionWidth(gCodeSettingDict, "perimeter_extrusion_width"),#Control how much bumpiness you allow between arcs and perimeter. lower will follow perimeter better, but create a lot of very small arcs. Should be more that 1 Arcwidth! Unit:mm
         "MinArea":5*10,#Unit:mm2
         "MinBridgeLength":5,#Unit:mm
         "RMax":110, # the max radius of the arcs.
         
         #Special cooling to prevent warping:
-        "aboveArcsFanSpeed":25, #0->255, 255=100%
-        "aboveArcsInfillPrintSpeed":10*60, # Unit :mm/min
-        "aboveArcsPerimeterFanSpeed":25, #0->255, 255=100%
-        "aboveArcsPerimeterPrintSpeed":3*60, #Unit: mm/min
+        "aboveArcsFanSpeed":255, #0->255, 255=100%
+        "aboveArcsInfillPrintSpeed":40*60,#10*60, # Unit :mm/min
+        "aboveArcsPerimeterFanSpeed":255, #0->255, 255=100%
+        "aboveArcsPerimeterPrintSpeed":40*60,#3*60, #Unit: mm/min
         "applyAboveFanSpeedToWholeLayer":True,
         "CoolingSettingDetectionDistance":5, #if the gcode line is closer than this distance to an infill polygon the cooling settings will be applied. Unit:mm
         "specialCoolingZdist":3, #use the special cooling XX mm above the arcs.
 
         #advanced Settings, you should not need to touch these.
-        "ArcExtrusionMultiplier":1.35,
+        "ArcExtrusionMultiplier":1.15,
         "ArcSlowDownBelowThisDuration":3,# Arc Time below this Duration =>slow down, Unit: sec
-        "ArcWidth":gCodeSettingDict.get("nozzle_diameter")*0.95, #change the spacing between the arcs,should be nozzle_diameter
+        "ArcWidth":gCodeSettingDict.get("nozzle_diameter"),#*0.95, #change the spacing between the arcs,should be nozzle_diameter
         "ArcFanSpeed":255,#cooling to full blast=255
         "CornerImportanceMultiplier":0.2, # Startpoint for Arc generation is chosen close to the middle of the StartLineString and at a corner. Higher=>Cornerselection more important.
         "DistanceBetweenPointsOnStartLine":0.1,#used for redestribution, if start fails.
         "GCodeArcPtMinDist":0.1, # min Distance between points on the Arcs to for seperate GCode Command. Unit:mm
-        "ExtendArcDist":1.0, # extend Arcs tangentially for better bonding bewteen them, only end-piece affected(yet), Unit:mm
+        "ExtendArcDist":0.1, # extend Arcs tangentially for better bonding bewteen them, only end-piece affected(yet), Unit:mm
         "HilbertFillingPercentage":100, # infillpercentage of the massive layers with special cooling. Uses Hilbert Curve, works not quite right yet.
         "HilbertInfillExtrusionMultiplier":1.05, 
         "HilbertTravelEveryNSeconds":6, # when N seconds are driven it will continue printing somewhere else (very rough approx).
@@ -281,7 +281,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                         #plt.show()
                         for ida,arc in enumerate(arcs4gcode):
                             if not arc.is_empty:    
-                                arcGCode=arc2GCode(arcline=arc,eStepsPerMM=eStepsPerMM,arcidx=ida)
+                                arcGCode=arc2GCode(arcline=arc,eStepsPerMM=eStepsPerMM,arcidx=ida, kwargs=gCodeSettingDict)
                                 arcOverhangGCode.append(arcGCode)
 
                 #apply special cooling settings:    
@@ -1132,7 +1132,8 @@ def p2GCode(p:Point,E=0,**kwargs)->str:
 def retractGCode(retract:bool=True,kwargs:dict={})->str:
     retractDist=kwargs.get("retract_length",1)
     E= -retractDist if retract else retractDist
-    return f"G1 E{E} F{kwargs.get('retract_speed',2100)}\n"  
+    speed = kwargs.get('retract_speed') if retract else kwargs.get('deretract_speed')
+    return f"G1 E{E} F{speed*60}\n"  
 
 def setFeedRateGCode(F:int)->str:
     return f"G1 F{F}\n"     
@@ -1155,7 +1156,7 @@ def arc2GCode(arcline:LineString,eStepsPerMM:float,arcidx=None,kwargs={})->list:
             p1=p
             GCodeLines.append(f";Arc {arcidx if arcidx else ' '} Length:{arcline.length}\n")
             GCodeLines.append(p2GCode(p,F=kwargs.get('ArcTravelFeedRate',100*60)))#feedrate is mm/min...
-            GCodeLines.append(retractGCode(retract=False))
+            GCodeLines.append(retractGCode(retract=False, kwargs=kwargs))
             GCodeLines.append(setFeedRateGCode(arcPrintSpeed))
         else:
             dist=p.distance(p1)
@@ -1164,7 +1165,7 @@ def arc2GCode(arcline:LineString,eStepsPerMM:float,arcidx=None,kwargs={})->list:
                 p1=p
         if idp==len(pts)-1:
             GCodeLines.append(p2GCode(pExtend,E=extDist*eStepsPerMM))#extend arc tangentially for better bonding between arcs
-            GCodeLines.append(retractGCode(retract=True))
+            GCodeLines.append(retractGCode(retract=True, kwargs=kwargs))
     return GCodeLines        
 
 def hilbert2GCode(allhilbertpts:list,parameters:dict,layerheight:float):
