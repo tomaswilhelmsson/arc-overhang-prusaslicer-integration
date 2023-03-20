@@ -1050,8 +1050,12 @@ def readSettingsFromGCode2dict(gcodeLines:list)->dict:
     gCodeSettingDict={}
     isSetting=False
     for line in gcodeLines:
-        if "; SuperSlicer_config = begin" in line or "; PrusaSlicer_config = begin" in line:
+        if "_config = begin" in line:
             isSetting=True
+            if "SuperSlicer" in line:
+                gCodeSettingDict["IsPrusaSlicer"] = False
+            else:
+                gCodeSettingDict["IsPrusaSlicer"] = True
             continue
         if isSetting :
             setting=line.strip(";").strip("\n").split("= ")
@@ -1091,9 +1095,10 @@ def checkforNecesarrySettings(gCodeSettingDict:dict)->bool:
     if gCodeSettingDict.get("extrusion_width")<0.001 or getExtrusionWidth(gCodeSettingDict, "perimeter_extrusion_width")<0.001 or getExtrusionWidth(gCodeSettingDict, "solid_infill_extrusion_width")<0.001:
         warnings.warn("Script only works with extrusion_width and perimeter_extrusion_width and solid_infill_extrusion_width>0. Change in PrusaSlicer acordingly.")
         return False    
-#    if not gCodeSettingDict.get("overhangs"):
-#        warnings.warn(" 'Detect Bridging Perimeters' disabled in PrusaSlicer. Activate in PrusaSlicer for script success!")
-#        return False
+    if gCodeSettingDict.get("IsPrusaSlicer"):
+        if not gCodeSettingDict.get("overhangs"):
+            warnings.warn(" 'Detect Bridging Perimeters' disabled in PrusaSlicer. Activate in PrusaSlicer for script success!")
+            return False
     if gCodeSettingDict.get("bridge_speed")>5:
         warnings.warn(f"Your Bridging Speed is set to {gCodeSettingDict.get('bridge_speed'):.0f} mm/s in PrusaSlicer. This can cause problems with warping.<=5mm/s is recommended")        
     if gCodeSettingDict.get("infill_first"):
