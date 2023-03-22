@@ -94,7 +94,8 @@ def makeFullSettingDict(gCodeSettingDict:dict) -> dict:
         "plotArcsFinal":False, #plot arcs for every filled polygon, when completely filled. use for debugging
         "plotDetectedInfillPoly":False, # plot each detected overhang polygon, use for debugging.
         "plotEachHilbert":False,
-        "PrintDebugVerification":False
+        "PrintDebugVerification":False,
+        "WriteFile":True,
         }
     gCodeSettingDict.update(AddManualSettingsDict)
     return gCodeSettingDict
@@ -152,6 +153,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                     #make Startpoint form previous layer    
                     prevLayer=layerobjs[idl-1]
                     prevLayer.makeExternalPerimeter2Polys()
+
                     arcOverhangGCode=[]  
                     for poly in layer.validpolys:
                         #make parameters more readable
@@ -365,7 +367,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                         modifiedlayer.lines.append(f"M106 S{layer.fansetting:.0f}\n")
                         messedWithFan=False        
                     layerobjs[idl]=modifiedlayer  # overwrite the infos
-    if gcodeWasModified:
+    if gcodeWasModified and gCodeSettingDict.get("WriteFile"):
         f=open(path2GCode,"w")
         print("overwriting file")
         for layer in layerobjs:
@@ -501,17 +503,25 @@ class Layer():
         if idf<1:
             return None
         lines=self.features[idf-1][1]
+        retract=f"F{self.parameters.get('retract_speed')*60}"
+        deretract=f"F{self.parameters.get('deretract_speed')*60}"
         for line in reversed(lines):
-            if "G1" in line:
+            if "G1" in line and not (retract in line or deretract in line): # Exclude the Extrude move as this was falsly identified as a G1 X move.
                 return getPtfromCmd(line)
 
     def makeExternalPerimeter2Polys(self)->None:
         extPerimeterIsStarted=False
+
         for idf,fe in enumerate(self.features):
             ftype=fe[0]
             lines=fe[1]
-            
-            if "External" in ftype or ("Overhang" in ftype and extPerimeterIsStarted) or ("Overhang" in ftype and self.dontPerformPerimeterCheck): #two different types of perimeter to for a poly: external perimeter and overhang perimeter + option for manual errorhandling, when there is no feature "external"
+            warnings.warn(f"ftype: {ftype}")
+
+            # Sometimes the overhang perimiter comes first for some reason,
+            # how to handle that ? if not checked for the overhang here the profile will be wong.
+            if "External" in ftype or "Overhang" in ftype or ("Overhang" in ftype and extPerimeterIsStarted) or ("Overhang" in ftype and self.dontPerformPerimeterCheck): #two different types of perimeter to for a poly: external perimeter and overhang perimeter + option for manual errorhandling, when there is no feature "external"
+                warnings.warn(f"Found external perimeter")
+
                 if not extPerimeterIsStarted:
                     linesWithStart=[]
                     if idf>1:
@@ -526,18 +536,26 @@ class Layer():
                 poly=makePolygonFromGCode(linesWithStart)
                 if poly:
                     self.extPerimeterPolys.append(poly) 
-                extPerimeterIsStarted=False   
+                extPerimeterIsStarted=False
+
     def makeStartLineString(self,poly:Polygon,kwargs:dict={}):
         if not self.extPerimeterPolys:
             self.makeExternalPerimeter2Polys()
         if len(self.extPerimeterPolys)<1:
             warnings.warn(f"Layer {self.layernumber}: No ExternalPerimeterPolys found in prev Layer")
-            return None,None   
+            return None,None
         for ep in self.extPerimeterPolys:
-            ep=ep.buffer(1e-2)# avoid self intersection error
+            ep=ep.buffer(1e-2)
+
+            # If the layer under is at say 45 degree or more there will be no intersection with peremiter
+            # so adding some padding to see if we find a start point
+            if not ep.intersects(poly):
+                ep=ep.buffer(getExtrusionWidth(kwargs, "external_perimeter_extrusion_width")*2)
+
             if ep.intersects(poly):
                 startArea=ep.intersection(poly)
                 startLineString=startArea.boundary.intersection(poly.boundary.buffer(1e-2))
+
                 if startLineString.is_empty:
                     if poly.contains(startArea):#if inside no boundarys can overlap.
                         startLineString=startArea.boundary
@@ -583,7 +601,7 @@ class Layer():
         if mergedPolys.geom_type=="Polygon":
             thesepolys=[mergedPolys]
         elif mergedPolys.geom_type=="MultiPolygon" or mergedPolys.geom_type=="GeometryCollection":
-            thesepolys=[poly for poly in mergedPolys.geoms] 
+            thesepolys=[poly for poly in mergedPolys.geoms]
         return thesepolys
     def spotFeaturePoints(self,featureName:str,splitAtWipe=False,includeRealStartPt=False, splitAtTravel=False)->list:
         parts=[]
@@ -594,18 +612,23 @@ class Layer():
             pts=[]
             isWipeMove=False
             travelstr=f"F{self.parameters.get('travel_speed')*60}"
+            retract=f"F{self.parameters.get('retract_speed')*60}"
+            deretract=f"F{self.parameters.get('deretract_speed')*60}"
             if featureName in ftype:
                 if includeRealStartPt and idf>0:
                     sp=self.getRealFeatureStartPoint(idf)
-                    if sp:pts.append(sp)       
+                    if sp:
+                        pts.append(sp)
                 for line in lines:
                     if "G1" in line and (not isWipeMove):
                         if (not "E" in line) and travelstr in line and splitAtTravel:
                             #print(f"Layer {self.layernumber}: try to split feature. No. of pts before:",len(pts))
+
                             if len(pts)>=2:#make at least 1 ls
                                 parts.append(pts)
                                 pts=[]# update self.features... TODO
-                        elif "E" in line:     #maybe fix error of included travel moves? 
+                                pts.append(getPtfromCmd(line))
+                        elif "E" in line and not (retract in line or deretract in line):     #maybe fix error of included travel moves? 
                             p=getPtfromCmd(line)
                             if p:
                                 pts.append(p)
@@ -643,7 +666,7 @@ class Layer():
         return False   
 
     def spotBridgeInfill(self)->None:
-        parts=self.spotFeaturePoints("Bridge infill",splitAtTravel=True)
+        parts=self.spotFeaturePoints("Bridge infill",includeRealStartPt=True, splitAtTravel=True)
         for idf,infillpts in enumerate(parts):
             self.binfills.append(BridgeInfill(infillpts))
     def makePolysFromBridgeInfill(self,extend:float=1)->None:
@@ -651,6 +674,7 @@ class Layer():
             infillPts=bInfill.pts
             infillLS=LineString(infillPts)
             infillPoly=infillLS.buffer(extend)
+#            infillPoly=infillLS.buffer(extend*4)
             self.polys.append(infillPoly)
             self.associatedIDs.append(bInfill.id)
             if self.parameters.get("plotDetectedInfillPoly"):
@@ -1079,6 +1103,9 @@ def getExtrusionWidth(gCodeSettingDict:dict, param:str)->float:
     if not param in gCodeSettingDict:
         return -1
 
+    if type(gCodeSettingDict.get(param)) == float:
+        return gCodeSettingDict.get(param)
+
     if not gCodeSettingDict.get("extrusion_width"):
         warning.warn("Setting extrusion_width not found in settings")
         return -1
@@ -1092,7 +1119,7 @@ def checkforNecesarrySettings(gCodeSettingDict:dict)->bool:
     if not gCodeSettingDict.get("use_relative_e_distances"):
         warnings.warn("Script only works with relative e-distances enabled in PrusaSlicer. Change acordingly.")
         return False
-    if gCodeSettingDict.get("extrusion_width")<0.001 or getExtrusionWidth(gCodeSettingDict, "perimeter_extrusion_width")<0.001 or getExtrusionWidth(gCodeSettingDict, "solid_infill_extrusion_width")<0.001:
+    if getExtrusionWidth(gCodeSettingDict, "extrusion_width")<0.001 or getExtrusionWidth(gCodeSettingDict, "perimeter_extrusion_width")<0.001 or getExtrusionWidth(gCodeSettingDict, "solid_infill_extrusion_width")<0.001:
         warnings.warn("Script only works with extrusion_width and perimeter_extrusion_width and solid_infill_extrusion_width>0. Change in PrusaSlicer acordingly.")
         return False    
     if gCodeSettingDict.get("IsPrusaSlicer"):
